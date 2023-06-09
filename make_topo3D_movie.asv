@@ -1,0 +1,114 @@
+% Make 2D and 3D movies of 64-channel ERP data. 
+% Load sample data (cleaned, epoched [-0.2  1], 
+% and CSD-transformed (i.e. Surface Laplacian) to increase local dynamics 
+% and spatial resolution. 
+clear; close all; clc
+eeglab; close;
+
+my_path = 'C:\Users\Tracy\Documents\MATLAB\eegmovie_topo3d'; cd(my_path)
+EEG = pop_loadset('filename','sample_data.set','filepath',my_path);
+
+fprintf('Installing eegmovie plugin... \n')
+if ~exist('eegmovie','file')
+    plugin_askinstall('eegmovie','eegmovie', 0);
+end
+
+% Prep data
+% EEG = pop_loadset('filename','sub-03_mindwandering_HEP.set','filepath', 'C:\Users\Tracy\Desktop\trance_mindwandering\data');
+% EEG = pop_loadset('filename','sub-01_mindwandering_session-1.set','filepath', 'C:\Users\Tracy\Desktop\trance_mindwandering\data');
+EEG = pop_biosig('G:\Shared drives\Grants\Post Award Grants\CLOSED PROJECTS\(737) Bial Mediumship 2017\Research\Data\MD_EEG\MD01\MD01.bdf');
+% EEG = pop_loadcnt('C:\Users\Tracy\Documents\MATLAB\presentiment_eeg\data_raw\group-02\sub-160_ses-01_task-precognition.cnt' , 'dataformat', 'auto', 'memmapfile', '');
+EEG = pop_select(EEG,'rmchannel',{'EXG1','EXG2','EXG3','EXG4','EXG5','EXG6','EXG7','EXG8','GSR1','GSR2','Erg1','Erg2','Resp','Plet','Temp'});
+chanlocpath = fileparts(which('dipfitdefs.m'));
+EEG = pop_chanedit(EEG,'rplurchanloc',1,'lookup',fullfile(chanlocpath,'standard_BEM','elec','standard_1005.elc'));
+EEG = pop_resample(EEG,256);
+EEG = pop_eegfiltnew(EEG,'locutoff',1,'minphase',true);    % use causal minimum-phase filter for pre-event analysis
+EEG = pop_eegfiltnew(EEG,'hicutoff',45,'minphase',false); % use causal minimum-phase filter for pre-event analysis
+EEG = reref_inf(EEG); 
+oriEEG = EEG;
+EEG = pop_clean_rawdata(EEG,'FlatlineCriterion',5,'ChannelCriterion',.8, ...
+    'LineNoiseCriterion',5,'Highpass','off', 'BurstCriterion','off', ...
+    'WindowCriterion','off','BurstRejection','off','Distance','off');    
+EEG = pop_interp(EEG, oriEEG.chanlocs, 'spherical'); % interpolate
+EEG = pop_epoch(EEG, {'condition 2'}, [-1  2],'newname','epoched','epochinfo','yes');
+b = design_fir(100,[2*[0 45 50]/EEG.srate 1],[1 1 0 0]);
+sigRMS = nan(1,size(EEG.data,3));
+snr = nan(1,size(EEG.data,3));
+for iEpoch = 1:size(EEG.data,3)
+    sigRMS(:,iEpoch) = rms(rms(squeeze(EEG.data(:,:,iEpoch)),2));
+    tmp = filtfilt_fast(b,1, squeeze(EEG.data(:,:,iEpoch))');
+    snr(:,iEpoch) = rms(mad(squeeze(EEG.data(:,:,iEpoch)) - tmp'));
+end
+badRMS = isoutlier(sigRMS,'grubbs');
+badSNR = isoutlier(snr,'grubbs');
+badTrials = unique([find(badRMS) find(badSNR)]);
+EEG = pop_rejepoch(EEG, badTrials, 0);
+sigRMS = nan(1,size(EEG.data,3));
+for iEpoch = 1:size(EEG.data,3)
+    sigRMS(:,iEpoch) = rms(rms(squeeze(EEG.data(:,:,iEpoch)),2));
+end
+badRMS = isoutlier(sigRMS,'mean');
+EEG = pop_rejepoch(EEG, find(badRMS), 0);
+dataRank = sum(eig(cov(double(EEG.data(:,:)'))) > 1E-7);
+EEG = pop_runica(EEG,'icatype','picard','maxiter',500,'mode','standard','pca',dataRank);
+EEG = pop_iclabel(EEG,'default');
+EEG = pop_icflag(EEG,[NaN NaN; .95 1; .9 1; .95 1; NaN NaN; NaN NaN; NaN NaN]);
+badComp = find(EEG.reject.gcompreject);
+EEG = eeg_checkset(EEG);
+pop_selectcomps(EEG,1:20);         
+EEG = pop_subcomp(EEG, badComp, 0);
+EEG = pop_epoch(EEG, {'condition 2'}, [-0.2  1],'newname','epoched','epochinfo','yes');
+
+% Reference-free CSD-transformation to increase spatial resolution
+EEG = csd_transform(EEG);
+
+% Plot ERP all channels
+figure; pop_timtopo(EEG, [-150 900], NaN);
+
+% Keep only the window [-50 to 500 ms] and average across trials
+pnts1 = round(eeg_lat2point(-0.05, 1, EEG.srate, [EEG.xmin EEG.xmax]));
+pnts2 = round(eeg_lat2point(0.5, 1, EEG.srate, [EEG.xmin EEG.xmax]));
+meanERP = mean(EEG.data(:,pnts1:pnts2),3);
+% meanERP = mean(EEG.data,3);
+
+% Smooth data
+% for iChan = 1:size(meanERP,1)
+%     meanERP(iChan,:) = conv(meanERP(iChan,:), ones(1,5)/5, 'same');
+% end
+
+% Create 2-D movie
+figure; 
+[Movie,Colormap] = eegmovie(meanERP, EEG.srate, EEG.chanlocs,'framenum','off', ...
+    'timecourse','on','vert',0,'startsec',-0.05,'topoplotopt',{'numcontour' 0});
+
+% play movie
+seemovie(Movie,0,Colormap);
+
+%% 3-D movie
+
+% Use the graphic interface to coregister the head model with electrode positions
+headplotparams1 = { 'meshfile','mheadnew.mat','transform', ...
+    [0.664455     -3.39403     -14.2521  -0.00241453     0.015519     -1.55584           11      10.1455           12] };
+headplotparams2 = { 'meshfile','colin27headmesh.mat','transform', ...
+    [0          -13            0          0.1            0        -1.57         11.7         12.5           12] };
+
+headplotparams  = headplotparams2; % switch here between 1 and 2
+
+% set up the spline file
+headplot('setup', EEG.chanlocs, 'spline.spl', headplotparams{:}); close
+ 
+% Check scalp topo and head topo
+% figure; headplot(meanERP(:,end-50), 'spline.spl', headplotparams{:}, 'maplimits', 'absmax', 'lighting', 'on');
+figure('color','w'); 
+[Movie,Colormap] = eegmovie(meanERP, EEG.srate,EEG.chanlocs,'framenum','off',...
+    'vert',0,'startsec',-0.1,'mode','3d','minmax',0, ...
+    'headplotopt',[headplotparams(:)', {'material'}, {'metal'}], 'camerapath', [-127 2 30 0]); 
+
+% Play movie 
+seemovie(Movie,-5,Colormap);
+
+% save movie
+vidObj = VideoWriter('ERP_video_3D.mp4','MPEG-4');
+open(vidObj);
+writeVideo(vidObj, Movie);
+close(vidObj);
