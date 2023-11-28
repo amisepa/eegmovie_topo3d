@@ -28,6 +28,8 @@ pnts2 = round(eeg_lat2point(0.5, 1, EEG.srate, [EEG.xmin EEG.xmax]));
 meanERP = mean(EEG.data(:,pnts1:pnts2),3);
 % meanERP = mean(EEG.data,3);
 
+headplot(EEG.data,'tmp.spl','view',[azimuth elevation], opt.headplotopt{:});
+
 % Smooth data
 % for iChan = 1:size(meanERP,1)
 %     meanERP(iChan,:) = conv(meanERP(iChan,:), ones(1,5)/5, 'same');
